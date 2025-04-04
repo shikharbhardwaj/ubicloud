@@ -3,7 +3,8 @@ $(function () {
   setupDatePicker();
   setupFormOptionUpdates();
   setupPlayground();
-  setupFormsWithPatchMethod()
+  setupFormsWithPatchMethod();
+  setupMetricsCharts();
 });
 
 $(".toggle-mobile-menu").on("click", function (event) {
@@ -457,4 +458,351 @@ function setupFormsWithPatchMethod() {
         }
     });
   });
+}
+
+function setupMetricsCharts() {
+  // Only execute on postgres show page with metrics
+  if (!$('.metrics-grid').length) {
+    return;
+  }
+
+  function initializeCharts(config) {
+    $('.metric-card').each(function() {
+      const card = $(this);
+      const chartContainer = card.find('.h-48');
+      const metricName = card.find('h3').text();
+      const queryElement = card.find('code');
+      const query = queryElement.text();
+      const unit = card.find('span').length ? card.find('span').text().split('Unit: ')[1] : '';
+      
+      // Clear the placeholder content
+      chartContainer.empty();
+      
+      // Add a unique ID to the container if it doesn't already have one
+      let chartId = chartContainer.attr('id');
+      if (!chartId) {
+        chartId = `metric-chart-${Math.random().toString(36).substr(2, 9)}`;
+        chartContainer.attr('id', chartId);
+      }
+      
+      // Get the Postgres resource ID from the URL
+      const resourceId = window.location.pathname.split('/postgres/')[1].split('/')[0];
+      
+      // Create the chart
+      createTimeSeriesChart(
+        chartId, 
+        metricName, 
+        query, 
+        unit, 
+        resourceId
+      );
+    });
+  }
+
+  // Fetch metrics configuration (endpoint URL, credentials, etc.)
+  $.ajax({
+    url: `${window.location.pathname.split('/postgres/')[0]}/postgres/metrics-config`,
+    type: 'GET',
+    dataType: 'json',
+    success: function(config) {
+      // Initialize charts
+      initializeCharts(config);
+      
+      // Set up refresh button
+      $('#refresh-metrics-btn').on('click', function() {
+        // Change button text and disable
+        const $btn = $(this);
+        const originalText = $btn.html();
+        $btn.html('<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Refreshing...');
+        $btn.prop('disabled', true);
+        
+        // Reinitialize charts
+        initializeCharts(config);
+        
+        // Reset button after a short delay
+        setTimeout(function() {
+          $btn.html(originalText);
+          $btn.prop('disabled', false);
+        }, 1000);
+      });
+    },
+    error: function(xhr, status, error) {
+      console.error('Failed to load metrics configuration:', error);
+    }
+  });
+}
+
+function createTimeSeriesChart(containerId, title, query, unit, resourceId) {
+  // Set up dimensions and margins
+  const container = document.getElementById(containerId);
+  const width = container.clientWidth;
+  const height = container.clientHeight;
+  const margin = { top: 20, right: 20, bottom: 30, left: 50 };
+  const innerWidth = width - margin.left - margin.right;
+  const innerHeight = height - margin.top - margin.bottom;
+  
+  // Create SVG
+  const svg = d3.select(`#${containerId}`)
+    .append('svg')
+    .attr('class', 'd3-chart')
+    .attr('width', width)
+    .attr('height', height)
+    .append('g')
+    .attr('transform', `translate(${margin.left},${margin.top})`);
+  
+  // Add loading indicator
+  const loading = svg.append('text')
+    .attr('x', innerWidth / 2)
+    .attr('y', innerHeight / 2)
+    .attr('text-anchor', 'middle')
+    .text('Loading data...');
+  
+  // Time range - last hour
+  const endTime = Math.floor(Date.now() / 1000);
+  const startTime = endTime - 60 * 60; // 1 hour ago
+  
+  // Prepare the URL for metrics proxy
+  const params = new URLSearchParams({
+    query: query,
+    start: startTime,
+    end: endTime,
+    step: '15s', // 15-second intervals
+  });
+  
+  const url = `${window.location}/metrics-proxy?${params.toString()}`;
+  
+  // Fetch data from our metrics proxy
+  fetch(url)
+    .then(response => {
+      if (!response.ok) {
+        throw new Error('Network response was not ok');
+      }
+      return response.json();
+    })
+    .then(data => {
+      // Remove loading indicator
+      loading.remove();
+      
+      if (!data.data || !data.data.result || data.data.result.length === 0) {
+        svg.append('text')
+          .attr('x', innerWidth / 2)
+          .attr('y', innerHeight / 2)
+          .attr('text-anchor', 'middle')
+          .text('No data available');
+        return;
+      }
+      
+      // Process data
+      const series = data.data.result.map(item => {
+        // Extract metric name from the metric object
+        const name = item.metric && Object.values(item.metric).join(', ');
+        
+        return {
+          name: name,
+          values: item.values.map(point => {
+            let value = parseFloat(point[1]);
+            
+            return {
+              time: new Date(point[0] * 1000),
+              value: value
+            };
+          })
+        };
+      });
+      
+      // Helper function to format bytes to human-readable format
+      function formatBytes(bytes, decimals = 2) {
+        if (bytes === 0) return '0 Bytes';
+        
+        const k = 1024;
+        const dm = decimals < 0 ? 0 : decimals;
+        const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
+        
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+      }
+      
+      // Set up time scale for X-axis
+      const x = d3.scaleTime()
+        .domain([new Date(startTime * 1000), new Date(endTime * 1000)])
+        .range([0, innerWidth]);
+      
+      // Get min and max values for Y-axis scaling
+      const allValues = series.flatMap(s => s.values.map(v => v.value));
+      let yMin = d3.min(allValues);
+      let yMax = d3.max(allValues);
+      
+      // For percentage metrics, use 0-100 scale
+      if (unit === 'percent') {
+        yMin = 0;
+        yMax = 100;
+      } else {
+        // For other metrics, add padding
+        const yPadding = (yMax - yMin) * 0.1;
+        yMin = Math.max(0, yMin - yPadding); // Don't go below 0 for most metrics
+        yMax = yMax + yPadding;
+      }
+      
+      const y = d3.scaleLinear()
+        .domain([yMin, yMax])
+        .range([innerHeight, 0]);
+      
+      // Add axes
+      svg.append('g')
+        .attr('transform', `translate(0,${innerHeight})`)
+        .call(d3.axisBottom(x).ticks(5));
+      
+      // Create y-axis with custom formatting for bytes
+      let yAxis;
+      if (unit === 'bytes') {
+        yAxis = d3.axisLeft(y).tickFormat(d => formatBytes(d));
+      } else if (unit === 'percent') {
+        yAxis = d3.axisLeft(y).tickFormat(d => d + '%');
+      } else {
+        yAxis = d3.axisLeft(y);
+      }
+      
+      // Add grid lines
+      svg.append('g')
+        .attr('class', 'grid')
+        .attr('opacity', 0.3)
+        .call(d3.axisLeft(y)
+          .tickSize(-innerWidth)
+          .tickFormat('')
+        );
+      
+      svg.append('g')
+        .call(yAxis);
+      
+      // Define line generator
+      const line = d3.line()
+        .x(d => x(d.time))
+        .y(d => y(d.value))
+        .curve(d3.curveMonotoneX);
+      
+      // Color scale
+      const color = d3.scaleOrdinal(d3.schemeCategory10);
+      
+      // Draw lines
+      series.forEach((s, i) => {
+        svg.append('path')
+          .datum(s.values)
+          .attr('fill', 'none')
+          .attr('stroke', color(i))
+          .attr('stroke-width', 2)
+          .attr('d', line);
+      });
+      
+      // Add tooltip
+      const tooltip = d3.select('body').append('div')
+        .attr('class', 'd3-chart tooltip')
+        .style('opacity', 0)
+        .style('position', 'absolute')
+        .style('pointer-events', 'none');
+      
+      // Add transparent overlay for mouse events
+      const overlay = svg.append('rect')
+        .attr('class', 'overlay')
+        .attr('width', innerWidth)
+        .attr('height', innerHeight)
+        .on('mousemove', function(event) {
+          const [mouseX] = d3.pointer(event, this);
+          const date = x.invert(mouseX);
+          const timestamp = date.getTime();
+          
+          // Find the closest data point for each series
+          const points = [];
+          series.forEach((s, i) => {
+            const closest = s.values.reduce((prev, curr) => {
+              const prevDiff = Math.abs(prev.time.getTime() - timestamp);
+              const currDiff = Math.abs(curr.time.getTime() - timestamp);
+              return prevDiff < currDiff ? prev : curr;
+            });
+            
+            points.push({
+              name: s.name,
+              value: closest.value,
+              time: closest.time,
+              color: color(i)
+            });
+          });
+          
+          // Update tooltip
+          tooltip.style('opacity', 1)
+            .style('left', (event.pageX + 10) + 'px')
+            .style('top', (event.pageY - 28) + 'px')
+            .html(() => {
+              const formattedTime = points[0].time.toLocaleTimeString();
+              const rows = points.map(p => {
+                // Format value appropriately based on unit
+                let formattedValue;
+                if (unit === 'bytes') {
+                  formattedValue = formatBytes(p.value);
+                } else if (unit === 'percent') {
+                  formattedValue = p.value.toFixed(2) + '%';
+                } else {
+                  formattedValue = p.value.toFixed(2);
+                }
+                
+                return `<div style="display:flex; align-items:center; margin:3px 0;">
+                  <div style="width:10px; height:10px; background:${p.color}; margin-right:5px;"></div>
+                  <span>${p.name ? p.name + ': ' : ''}${formattedValue}</span>
+                </div>`;
+              }).join('');
+              
+              return `
+                <strong>${formattedTime}</strong>
+                ${rows}
+              `;
+            });
+        })
+        .on('mouseout', function() {
+          tooltip.style('opacity', 0);
+        });
+      
+      // Add legend if there are multiple series
+      if (series.length > 1) {
+        const legend = svg.append('g')
+          .attr('font-family', 'sans-serif')
+          .attr('font-size', 10)
+          .attr('text-anchor', 'end')
+          .selectAll('g')
+          .data(series)
+          .enter().append('g')
+          .attr('transform', (d, i) => `translate(0,${i * 20})`);
+        
+        legend.append('rect')
+          .attr('x', innerWidth - 19)
+          .attr('width', 19)
+          .attr('height', 19)
+          .attr('fill', (d, i) => color(i));
+        
+        legend.append('text')
+          .attr('x', innerWidth - 24)
+          .attr('y', 9.5)
+          .attr('dy', '0.32em')
+          .text(d => d.name);
+      }
+      
+      // Add unit label if provided
+      if (unit) {
+        svg.append('text')
+          .attr('transform', 'rotate(-90)')
+          .attr('y', -margin.left + 15)
+          .attr('x', -innerHeight / 2)
+          .attr('text-anchor', 'middle')
+          .text(unit);
+      }
+    })
+    .catch(error => {
+      console.error('Error fetching metric data:', error);
+      loading.remove();
+      
+      svg.append('text')
+        .attr('x', innerWidth / 2)
+        .attr('y', innerHeight / 2)
+        .attr('text-anchor', 'middle')
+        .text('Error loading data');
+    });
 }

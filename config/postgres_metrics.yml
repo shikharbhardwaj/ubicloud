@@ -1,0 +1,18 @@
+- name: CPU Usage
+  unit: percent
+  query: (1 - sum(avg(rate(node_cpu_seconds_total{mode="idle", instance="$ubid"})))) * 100
+- name: Load average (1m)
+  unit: null
+  query: sum(node_load1{instance="$ubid"})
+- name: Load average (5m)
+  unit: null
+  query: sum(node_load5{instance="$ubid"})
+- name: Load average (15m)
+  unit: null
+  query: sum(node_load15{instance="$ubid"})
+- name: Memory usage
+  unit: percent
+  query: (1 - (node_memory_MemAvailable_bytes{instance="$ubid"} / node_memory_MemTotal_bytes{instance="$ubid"})) * 100
+- name: Disk usage
+  unit: percent
+  query: 100 - (sum(node_filesystem_avail_bytes{mountpoint="/dat", instance="$ubid"} / node_filesystem_size_bytes{mountpoint="/dat", instance="$ubid"}) * 100)

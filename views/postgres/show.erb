@@ -205,6 +205,59 @@ delete_perm = has_permission?("Postgres:delete", @pg[:id]) %>
       </div>
     </div>
   <% end %>
+  <!-- Metrics Card -->
+  <div>
+    <div class="md:flex md:items-center md:justify-between pb-2 lg:pb-4">
+      <div class="min-w-0 flex-1">
+        <h3 class="text-2xl font-bold leading-7 text-gray-900 sm:truncate sm:text-2xl sm:tracking-tight">
+          Metrics
+        </h3>
+      </div>
+      <% if @pg[:metric_destinations].any? %>
+        <div class="mt-4 flex md:ml-4 md:mt-0">
+          <button type="button" id="refresh-metrics-btn" class="inline-flex items-center rounded-md bg-white px-3 py-2 text-sm font-semibold text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50">
+            <svg class="-ml-0.5 mr-1.5 h-5 w-5 text-gray-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            Refresh Metrics
+          </button>
+        </div>
+      <% end %>
+    </div>
+    <% if @pg[:metric_destinations].any? %>
+      <p class="text-sm text-gray-500 mb-4">
+        Charts show metrics for the last hour. Use the refresh button to update data.
+      </p>
+    <% end %>
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-6 metrics-grid">
+      <% @metrics.each do |metric| %>
+        <div class="overflow-hidden rounded-lg shadow ring-1 ring-black ring-opacity-5 bg-white divide-y divide-gray-200 metric-card">
+          <div class="px-4 py-5 sm:p-6">
+            <h3 class="text-base font-semibold leading-6 text-gray-900"><%= metric['name'] %></h3>
+            <div class="mt-2">
+              <div class="h-48 rounded-md bg-gray-50 p-4 flex items-center justify-center">
+                <% if @pg[:metric_destinations].any? %>
+                  <!-- Will be replaced by d3.js chart -->
+                  <p class="text-sm text-gray-500">Loading chart...</p>
+                <% else %>
+                  <p class="text-sm text-gray-500">
+                    No metric destination configured. Add a metric destination to collect metrics.
+                  </p>
+                <% end %>
+              </div>
+              <p class="mt-2 text-xs text-gray-500">
+                Query: <code><%= metric['query'] %></code>
+                <% if metric["unit"] %>
+                  <span class="ml-2">Unit: <%= metric["unit"] %></span>
+                <% end %>
+              </p>
+            </div>
+          </div>
+        </div>
+      <% end %>
+    </div>
+  </div>
+  
   <!-- Firewall Rules Card -->
   <div>
     <div class="md:flex md:items-center md:justify-between pb-2 lg:pb-4">

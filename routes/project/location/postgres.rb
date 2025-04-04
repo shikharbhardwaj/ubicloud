@@ -6,6 +6,12 @@ class Clover
       postgres_list
     end
 
+    r.get "metrics-config" do
+      {
+        metrics: YAML.load_file(File.join(File.dirname(__FILE__), "../../../config/postgres_metrics.yml"))
+      }.to_json
+    end
+
     r.on POSTGRES_RESOURCE_NAME_OR_UBID do |pg_name, pg_ubid|
       if pg_name
         r.post api? do
@@ -33,6 +39,7 @@ class Clover
           @pg = Serializers::Postgres.serialize(pg, {detailed: true, include_path: true})
           @family = Validation.validate_vm_size(pg.target_vm_size, "x64").family
           @option_tree, @option_parents = generate_postgres_configure_options(flavor: @pg[:flavor], location: @location)
+          @metrics = YAML.load_file(File.join(File.dirname(__FILE__), "../../../config/postgres_metrics.yml"))
           view "postgres/show"
         end
       end
@@ -181,6 +188,91 @@ class Clover
           end
 
           204
+        end
+      end
+
+      r.get "metrics-proxy" do
+        # Require query parameters
+        query = request.params["query"]
+        start = request.params["start"]
+        end_time = request.params["end"]
+        step = request.params["step"]
+
+        unless query && start && end_time && step && pg.ubid
+          r.response.status = 400
+          r.response.headers["Content-Type"] = "application/json"
+          return {error: "Missing required query parameters"}.to_json
+        end
+
+        # Set up Victoriametrics connection
+        vm_url = Config.victoriametrics_url || "http://localhost:8428"
+        vm_username = Config.victoriametrics_username
+        vm_password = Config.victoriametrics_password
+
+        unless vm_url
+          r.response.status = 503
+          r.response.headers["Content-Type"] = "application/json"
+          return {error: "VictoriaMetrics configuration is missing"}.to_json
+        end
+
+        # Get the primary Postgres server UBID
+        if pg.representative_server
+          server_ubid = pg.representative_server.ubid
+
+          # Replace $ubid placeholder with actual server UBID
+          query = query.gsub("$ubid", server_ubid)
+        end
+
+        # Prepare Victoriametrics request URL
+        api_path = "/api/v1/query_range"
+        query_params = URI.encode_www_form({
+          query: query,
+          start: start,
+          end: end_time,
+          step: step
+        })
+
+        begin
+          uri = URI("#{vm_url}#{api_path}?#{query_params}")
+          http = Net::HTTP.new(uri.host, uri.port)
+
+          # Set up HTTPS if needed
+          if uri.scheme == "https"
+            http.use_ssl = true
+            http.verify_mode = OpenSSL::SSL::VERIFY_NONE
+          end
+
+          # Create request
+          vm_request = Net::HTTP::Get.new(uri)
+
+          # Add Basic Auth if credentials are available
+          if vm_username && vm_password
+            vm_request.basic_auth(vm_username, vm_password)
+          end
+
+          # Send request to VictoriaMetrics
+          vm_response = http.request(vm_request)
+
+          # Set JSON content type for our response
+          r.response.headers["Content-Type"] = "application/json"
+
+          # Check if response was successful
+          unless vm_response.is_a?(Net::HTTPSuccess)
+            r.response.status = vm_response.code.to_i
+            return {
+              error: "VictoriaMetrics returned an error",
+              status: vm_response.code,
+              message: vm_response.message,
+              body: vm_response.body
+            }.to_json
+          end
+
+          # Return proxied response
+          vm_response.body
+        rescue => e
+          r.response.status = 500
+          r.response.headers["Content-Type"] = "application/json"
+          {error: "Error querying metrics: #{e.message}"}.to_json
         end
       end
 

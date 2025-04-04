@@ -141,6 +141,11 @@ module Config
   # Logging
   optional :database_logger_level, string
 
+  # VictoriaMetrics
+  optional :victoriametrics_url, string
+  optional :victoriametrics_username, string, clear: true
+  optional :victoriametrics_password, string, clear: true
+
   # Ubicloud Images
   override :ubicloud_images_bucket_name, "ubicloud-images", string
   optional :ubicloud_images_blob_storage_endpoint, string

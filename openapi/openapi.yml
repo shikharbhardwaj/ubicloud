@@ -679,6 +679,102 @@ paths:
           $ref: '#/components/responses/Error'
       tags:
         - Postgres Database
+        
+  '/project/{project_id}/location/{location}/postgres/metrics-config':
+    get:
+      operationId: getPostgresMetricsConfig
+      summary: Get metrics configuration for Postgres databases
+      parameters:
+        - $ref: '#/components/parameters/project_id'
+        - $ref: '#/components/parameters/location'
+      responses:
+        '200':
+          description: Postgres metrics configuration
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  metrics:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        unit:
+                          type: string
+                          nullable: true
+                        query:
+                          type: string
+                  api_prefix:
+                    type: string
+        default:
+          $ref: '#/components/responses/Error'
+      tags:
+        - Postgres Database
+        
+  '/project/{project_id}/location/{location}/postgres/{postgres_database_name}/metrics-proxy':
+    get:
+      operationId: proxyPostgresMetrics
+      summary: Proxy for VictoriaMetrics to avoid CORS issues and handle server ID substitution
+      parameters:
+        - $ref: '#/components/parameters/project_id'
+        - $ref: '#/components/parameters/location'
+        - $ref: '#/components/parameters/postgres_database_name'
+        - name: query
+          in: query
+          description: PromQL query to execute
+          required: true
+          schema:
+            type: string
+        - name: start
+          in: query
+          description: Start time in Unix timestamp seconds
+          required: true
+          schema:
+            type: string
+        - name: end
+          in: query
+          description: End time in Unix timestamp seconds
+          required: true
+          schema:
+            type: string
+        - name: step
+          in: query
+          description: Step size for time series
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Metrics data from VictoriaMetrics
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Bad request - missing parameters
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        '503':
+          description: Service unavailable - VictoriaMetrics configuration missing
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        default:
+          $ref: '#/components/responses/Error'
+      tags:
+        - Postgres Database
   '/project/{project_id}/location/{location}/postgres/{postgres_database_name}':
     parameters:
       - $ref: '#/components/parameters/project_id'

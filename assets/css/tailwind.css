@@ -9,4 +9,46 @@
         @apply ring-1 ring-gray-300 bg-white text-gray-900 hover:bg-gray-50 peer-focus-visible:ring-2 peer-focus-visible:ring-orange-600;
         @apply peer-focus-visible:ring-offset-2 peer-checked:bg-orange-600 peer-checked:text-white peer-checked:hover:bg-orange-700;
     }
+    
+    /* D3.js Chart Styles */
+    .d3-chart .axis line,
+    .d3-chart .axis path {
+        stroke: #e5e7eb;
+    }
+    
+    .d3-chart .axis text {
+        fill: #6b7280;
+        font-size: 12px;
+    }
+    
+    .d3-chart .line {
+        fill: none;
+        stroke-width: 2px;
+    }
+    
+    .d3-chart .grid line {
+        stroke: #e5e7eb;
+        stroke-opacity: 0.7;
+        shape-rendering: crispEdges;
+    }
+    
+    .d3-chart .grid path {
+        stroke-width: 0;
+    }
+    
+    .d3-chart .overlay {
+        fill: none;
+        pointer-events: all;
+    }
+    
+    .d3-chart .tooltip {
+        position: absolute;
+        background: rgba(255, 255, 255, 0.9);
+        border: 1px solid #d1d5db;
+        border-radius: 5px;
+        padding: 5px;
+        pointer-events: none;
+        font-size: 12px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    }
 }

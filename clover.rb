@@ -108,7 +108,7 @@ class Clover < Roda
     csp.style_src :self, "https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.css"
     csp.img_src :self, "data: image/svg+xml"
     csp.form_action :self, "https://checkout.stripe.com", "https://github.com/login/oauth/authorize", "https://accounts.google.com/o/oauth2/auth"
-    csp.script_src :self, "https://cdn.jsdelivr.net/npm/jquery@3.7.0/dist/jquery.min.js", "https://cdn.jsdelivr.net/npm/dompurify@3.0.5/dist/purify.min.js", "https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js", "https://challenges.cloudflare.com/turnstile/v0/api.js", "https://cdn.jsdelivr.net/npm/marked@15.0.5/marked.min.js"
+    csp.script_src :self, "https://cdn.jsdelivr.net/npm/jquery@3.7.0/dist/jquery.min.js", "https://cdn.jsdelivr.net/npm/dompurify@3.0.5/dist/purify.min.js", "https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js", "https://challenges.cloudflare.com/turnstile/v0/api.js", "https://cdn.jsdelivr.net/npm/marked@15.0.5/marked.min.js", "https://cdn.jsdelivr.net/npm/d3@7.8.5/dist/d3.min.js"
     csp.frame_src :self, "https://challenges.cloudflare.com"
     csp.connect_src :self, "https://*.ubicloud.com"
     csp.base_uri :none
@@ -663,6 +663,10 @@ class Clover < Roda
         @schema_validator = SCHEMA_ROUTER.build_schema_validator(r)
         @schema_validator.request_validate(r)
 
+        unless @schema_validator.link_exist?
+          puts "[committee] No schema found for #{r.method} #{r.path}"
+        end
+
         next unless @schema_validator.link_exist?
       rescue JSON::ParserError => e
         raise Committee::InvalidRequest.new("Request body wasn't valid JSON.", original_error: e)
@@ -677,6 +681,11 @@ class Clover < Roda
     status, headers, body = res
     next unless api? && status && headers && body
     @schema_validator ||= SCHEMA_ROUTER.build_schema_validator(request)
+
+    unless @schema_validator.link_exist?
+      puts "[committee] No schema found for #{request.method} #{request.path}"
+    end
+
     @schema_validator.response_validate(status, headers, body, true) if @schema_validator.link_exist?
   rescue JSON::ParserError => e
     raise Committee::InvalidResponse.new("Response body wasn't valid JSON.", original_error: e)
