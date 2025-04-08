@@ -1,18 +1,57 @@
 - name: CPU Usage
+  description: Percentage of CPU used by the system
   unit: percent
-  query: (1 - sum(avg(rate(node_cpu_seconds_total{mode="idle", instance="$ubid"})))) * 100
-- name: Load average (1m)
+  combined: false
+  series:
+    - label: CPU Usage
+      query: (1 - sum(avg(rate(node_cpu_seconds_total{mode="idle", instance="$ubid"}[5m])))) * 100
+
+- name: Load Average
+  description: System load average over different time periods
   unit: null
-  query: sum(node_load1{instance="$ubid"})
-- name: Load average (5m)
-  unit: null
-  query: sum(node_load5{instance="$ubid"})
-- name: Load average (15m)
-  unit: null
-  query: sum(node_load15{instance="$ubid"})
-- name: Memory usage
+  combined: true
+  series:
+    - label: 1 minute
+      query: sum(node_load1{instance="$ubid"})
+    - label: 5 minutes
+      query: sum(node_load5{instance="$ubid"})
+    - label: 15 minutes
+      query: sum(node_load15{instance="$ubid"})
+
+- name: Memory Usage
+  description: Memory usage statistics
   unit: percent
-  query: (1 - (node_memory_MemAvailable_bytes{instance="$ubid"} / node_memory_MemTotal_bytes{instance="$ubid"})) * 100
-- name: Disk usage
+  combined: true
+  series:
+    - label: Used Memory
+      query: (1 - (node_memory_MemAvailable_bytes{instance="$ubid"} / node_memory_MemTotal_bytes{instance="$ubid"})) * 100
+    - label: Cache & Buffers
+      query: (node_memory_Cached_bytes{instance="$ubid"} + node_memory_Buffers_bytes{instance="$ubid"}) / node_memory_MemTotal_bytes{instance="$ubid"} * 100
+
+- name: Disk Usage
+  description: Disk space utilization 
   unit: percent
-  query: 100 - (sum(node_filesystem_avail_bytes{mountpoint="/dat", instance="$ubid"} / node_filesystem_size_bytes{mountpoint="/dat", instance="$ubid"}) * 100)
+  combined: false
+  series:
+    - label: Used Space
+      query: 100 - (sum(node_filesystem_avail_bytes{mountpoint="/dat", instance="$ubid"} / node_filesystem_size_bytes{mountpoint="/dat", instance="$ubid"}) * 100)
+
+- name: Network Traffic
+  description: Network traffic in bytes per second
+  unit: bytes/s
+  combined: true
+  series:
+    - label: Received
+      query: rate(node_network_receive_bytes_total{instance="$ubid"}[5m])
+    - label: Transmitted
+      query: rate(node_network_transmit_bytes_total{instance="$ubid"}[5m])
+
+- name: Postgres Activity
+  description: Database activity metrics
+  unit: null
+  combined: true
+  series:
+    - label: Active Connections
+      query: sum(pg_stat_activity_count{instance="$ubid", state="active"})
+    - label: Total Connections
+      query: sum(pg_stat_activity_count{instance="$ubid"})

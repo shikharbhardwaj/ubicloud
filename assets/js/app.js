@@ -465,344 +465,449 @@ function setupMetricsCharts() {
   if (!$('.metrics-grid').length) {
     return;
   }
-
-  function initializeCharts(config) {
-    $('.metric-card').each(function() {
-      const card = $(this);
-      const chartContainer = card.find('.h-48');
-      const metricName = card.find('h3').text();
-      const queryElement = card.find('code');
-      const query = queryElement.text();
-      const unit = card.find('span').length ? card.find('span').text().split('Unit: ')[1] : '';
-      
-      // Clear the placeholder content
-      chartContainer.empty();
-      
-      // Add a unique ID to the container if it doesn't already have one
-      let chartId = chartContainer.attr('id');
-      if (!chartId) {
-        chartId = `metric-chart-${Math.random().toString(36).substr(2, 9)}`;
-        chartContainer.attr('id', chartId);
-      }
-      
-      // Get the Postgres resource ID from the URL
-      const resourceId = window.location.pathname.split('/postgres/')[1].split('/')[0];
-      
-      // Create the chart
-      createTimeSeriesChart(
-        chartId, 
-        metricName, 
-        query, 
-        unit, 
-        resourceId
-      );
-    });
+  
+  // State variables
+  let charts = {};
+  let refreshInterval = null;
+  let timeRange = '1h';
+  let lastRefresh = new Date();
+  let config = null;
+  let autoRefreshActive = false;
+  
+  // Helper function to format bytes to human-readable format
+  function formatBytes(bytes, decimals = 2) {
+    if (bytes === 0) return '0 Bytes';
+    
+    const k = 1024;
+    const dm = decimals < 0 ? 0 : decimals;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
+    
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
   }
-
-  // Fetch metrics configuration (endpoint URL, credentials, etc.)
-  $.ajax({
-    url: `${window.location.pathname.split('/postgres/')[0]}/postgres/metrics-config`,
-    type: 'GET',
-    dataType: 'json',
-    success: function(config) {
-      // Initialize charts
-      initializeCharts(config);
-      
-      // Set up refresh button
-      $('#refresh-metrics-btn').on('click', function() {
-        // Change button text and disable
-        const $btn = $(this);
-        const originalText = $btn.html();
-        $btn.html('<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Refreshing...');
-        $btn.prop('disabled', true);
-        
-        // Reinitialize charts
-        initializeCharts(config);
-        
-        // Reset button after a short delay
-        setTimeout(function() {
-          $btn.html(originalText);
-          $btn.prop('disabled', false);
-        }, 1000);
-      });
-    },
-    error: function(xhr, status, error) {
-      console.error('Failed to load metrics configuration:', error);
+  
+  // Get time range in seconds
+  function getTimeRangeInSeconds(range) {
+    const now = Math.floor(Date.now() / 1000);
+    
+    switch (range) {
+      case '15m': return { start: now - 15 * 60, end: now };
+      case '1h': return { start: now - 60 * 60, end: now };
+      case '3h': return { start: now - 3 * 60 * 60, end: now };
+      case '6h': return { start: now - 6 * 60 * 60, end: now };
+      case '12h': return { start: now - 12 * 60 * 60, end: now };
+      case '24h': return { start: now - 24 * 60 * 60, end: now };
+      case '3d': return { start: now - 3 * 24 * 60 * 60, end: now };
+      case '7d': return { start: now - 7 * 24 * 60 * 60, end: now };
+      case '30d': return { start: now - 30 * 24 * 60 * 60, end: now };
+      default: return { start: now - 60 * 60, end: now };
     }
-  });
-}
-
-function createTimeSeriesChart(containerId, title, query, unit, resourceId) {
-  // Set up dimensions and margins
-  const container = document.getElementById(containerId);
-  const width = container.clientWidth;
-  const height = container.clientHeight;
-  const margin = { top: 20, right: 20, bottom: 30, left: 50 };
-  const innerWidth = width - margin.left - margin.right;
-  const innerHeight = height - margin.top - margin.bottom;
+  }
   
-  // Create SVG
-  const svg = d3.select(`#${containerId}`)
-    .append('svg')
-    .attr('class', 'd3-chart')
-    .attr('width', width)
-    .attr('height', height)
-    .append('g')
-    .attr('transform', `translate(${margin.left},${margin.top})`);
-  
-  // Add loading indicator
-  const loading = svg.append('text')
-    .attr('x', innerWidth / 2)
-    .attr('y', innerHeight / 2)
-    .attr('text-anchor', 'middle')
-    .text('Loading data...');
-  
-  // Time range - last hour
-  const endTime = Math.floor(Date.now() / 1000);
-  const startTime = endTime - 60 * 60; // 1 hour ago
-  
-  // Prepare the URL for metrics proxy
-  const params = new URLSearchParams({
-    query: query,
-    start: startTime,
-    end: endTime,
-    step: '15s', // 15-second intervals
-  });
-  
-  const url = `${window.location}/metrics-proxy?${params.toString()}`;
-  
-  // Fetch data from our metrics proxy
-  fetch(url)
-    .then(response => {
-      if (!response.ok) {
-        throw new Error('Network response was not ok');
-      }
-      return response.json();
-    })
-    .then(data => {
-      // Remove loading indicator
-      loading.remove();
+  // Function to create or update chart
+  function createOrUpdateChart(chartElement, seriesResults, unit) {
+    // Get chart ID and metadata
+    const chartId = chartElement.attr('id');
+    const metricName = chartElement.data('name');
+    const combined = chartElement.data('combined') === true || chartElement.data('combined') === 'true';
+    
+    // Use the chart element directly
+    const targetElement = chartElement;
+    
+    // Prepare series data for ApexCharts
+    const series = [];
+    
+    // Process each series result to create the chart series
+    seriesResults.forEach(result => {
+      const seriesLabel = result.label;
+      const seriesData = result.data;
       
-      if (!data.data || !data.data.result || data.data.result.length === 0) {
-        svg.append('text')
-          .attr('x', innerWidth / 2)
-          .attr('y', innerHeight / 2)
-          .attr('text-anchor', 'middle')
-          .text('No data available');
+      // Skip empty series
+      if (!seriesData || !seriesData.data || !seriesData.data.result || !seriesData.data.result[0]) {
+        console.warn(`No data for series ${seriesLabel} in ${metricName}`);
         return;
       }
       
-      // Process data
-      const series = data.data.result.map(item => {
-        // Extract metric name from the metric object
-        const name = item.metric && Object.values(item.metric).join(', ');
-        
-        return {
-          name: name,
-          values: item.values.map(point => {
-            let value = parseFloat(point[1]);
-            
-            return {
-              time: new Date(point[0] * 1000),
-              value: value
-            };
-          })
-        };
+      // Create a series object for this data
+      const timeSeriesData = seriesData.data.result[0].values.map(point => ({
+        x: new Date(point[0] * 1000),
+        y: parseFloat(point[1]).toFixed(2)
+      }));
+      
+      // Add to the series array
+      series.push({
+        name: seriesLabel,
+        data: timeSeriesData
+      });
+    });
+    
+    // If we've got no data for any series, show message
+    if (series.length === 0) {
+      targetElement.html(`<div class="h-full w-full flex items-center justify-center">
+        <p class="text-sm text-gray-500">No data available for this time range</p>
+      </div>`);
+      return;
+    }
+    
+    // Check if we already have a chart instance
+    if (charts[chartId] && charts[chartId].chartInstance) {
+      // Just update the series data for the existing chart
+      ApexCharts.exec(chartId, 'updateSeries', series);
+      
+      // Store updated series
+      charts[chartId].series = series;
+      return;
+    }
+    
+    // Configure chart options based on the metric type
+    let yAxisFormatter;
+    let tooltipYFormatter;
+    let yAxisTitle = '';
+    
+    if (unit === 'percent') {
+      yAxisFormatter = (val) => `${val}%`;
+      tooltipYFormatter = (val) => `${parseFloat(val).toFixed(2)}%`;
+      yAxisTitle = 'Percent';
+    } else if (unit === 'bytes' || unit === 'bytes/s') {
+      yAxisFormatter = (val) => formatBytes(val);
+      tooltipYFormatter = (val) => formatBytes(parseFloat(val)) + (unit === 'bytes/s' ? '/s' : '');
+      yAxisTitle = unit === 'bytes/s' ? 'Bytes/s' : 'Size';
+    } else {
+      // Round to 2 decimal places for other units
+      yAxisFormatter = (val) => parseFloat(val).toFixed(2);
+      tooltipYFormatter = (val) => parseFloat(val).toFixed(2);
+      yAxisTitle = unit || '';
+    }
+    
+    // Define chart options
+    const options = {
+      chart: {
+        id: chartId,
+        type: 'line',
+        height: '100%',
+        fontFamily: 'Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif',
+        toolbar: {
+          show: true,
+          tools: {
+            download: true,
+            selection: true,
+            zoom: true,
+            zoomin: true,
+            zoomout: true,
+            pan: true,
+            reset: true
+          }
+        },
+        animations: {
+          enabled: false
+        }
+      },
+      colors: ['#f97316', '#22c55e', '#3b82f6', '#a855f7', '#f43f5e'],
+      dataLabels: {
+        enabled: false
+      },
+      stroke: {
+        curve: 'smooth',
+        width: 2
+      },
+      markers: {
+        size: 0
+      },
+      grid: {
+        padding: {
+          top: 10,
+          right: 10,
+          bottom: 10,
+          left: 10
+        },
+        strokeDashArray: 1
+      },
+      tooltip: {
+        x: {
+          format: 'dd MMM yyyy HH:mm:ss'
+        },
+        y: {
+          formatter: tooltipYFormatter
+        }
+      },
+      series: series,
+      xaxis: {
+        type: 'datetime',
+        labels: {
+          datetimeUTC: false,
+          formatter: function(val) {
+            return new Date(val).toLocaleTimeString();
+          }
+        }
+      },
+      yaxis: {
+        title: {
+          text: yAxisTitle
+        },
+        labels: {
+          formatter: yAxisFormatter
+        },
+        min: unit === 'percent' ? 0 : undefined,
+        max: unit === 'percent' ? 100 : undefined,
+        forceNiceScale: true
+      },
+      legend: {
+        position: 'top',
+        horizontalAlign: 'left'
+      }
+    };
+    
+    // Create new chart or update existing one
+    if (!charts[chartId] || !charts[chartId].chartInstance) {
+      // Create new chart
+      const chartInstance = new ApexCharts(targetElement[0], options);
+      chartInstance.render();
+      
+      // Store chart instance and series for later updates
+      charts[chartId] = {
+        chartInstance: chartInstance,
+        series: series
+      };
+    } else {
+      // Update existing chart
+      const chartInstance = charts[chartId].chartInstance;
+      
+      // Update series and options
+      chartInstance.updateOptions(options, false, true);
+      charts[chartId].series = series;
+    }
+  }
+  
+  // Function to fetch and update a single chart
+  function fetchChartData(chartElement, config) {
+    const metricName = chartElement.data('name');
+    const unit = chartElement.data('unit');
+    const chartId = chartElement.attr('id');
+    const combined = chartElement.data('combined') === true || chartElement.data('combined') === 'true';
+    
+    // Get the Postgres resource ID from the URL
+    const resourceId = window.location.pathname.split('/postgres/')[1].split('/')[0];
+    
+    // Get time range
+    const { start, end } = getTimeRangeInSeconds(timeRange);
+    
+    // Calculate step size based on time range
+    let stepSize = '1m';
+    if (timeRange === '6h') stepSize = '1m';
+    else if (timeRange === '12h') stepSize = '2m';
+    else if (timeRange === '24h') stepSize = '5m';
+    else if (timeRange === '3d') stepSize = '15m';
+    else if (timeRange === '7d') stepSize = '30m';
+    else if (timeRange === '30d') stepSize = '2h';
+    
+    // Get all series from this chart
+    const allSeries = chartElement.find('.chart-series');
+    
+    // If no series found (old format), show error
+    if (allSeries.length === 0) {
+      console.error(`No series found for chart ${metricName}`);
+      chartElement.html(`<div class="h-full w-full flex items-center justify-center">
+        <p class="text-sm text-red-500">Chart configuration error: No series defined</p>
+      </div>`);
+      return Promise.resolve();
+    }
+    
+    // Create promises for each series
+    const seriesPromises = [];
+    
+    allSeries.each(function() {
+      const seriesElement = $(this);
+      const label = seriesElement.data('label');
+      const query = seriesElement.data('query');
+      
+      // Prepare query parameters
+      const params = new URLSearchParams({
+        query: query,
+        start: start,
+        end: end,
+        step: stepSize
       });
       
-      // Helper function to format bytes to human-readable format
-      function formatBytes(bytes, decimals = 2) {
-        if (bytes === 0) return '0 Bytes';
-        
-        const k = 1024;
-        const dm = decimals < 0 ? 0 : decimals;
-        const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
-        
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
-      }
+      // Build URL for the metrics-proxy endpoint
+      const url = `${window.location}/metrics-proxy?${params.toString()}`;
       
-      // Set up time scale for X-axis
-      const x = d3.scaleTime()
-        .domain([new Date(startTime * 1000), new Date(endTime * 1000)])
-        .range([0, innerWidth]);
-      
-      // Get min and max values for Y-axis scaling
-      const allValues = series.flatMap(s => s.values.map(v => v.value));
-      let yMin = d3.min(allValues);
-      let yMax = d3.max(allValues);
-      
-      // For percentage metrics, use 0-100 scale
-      if (unit === 'percent') {
-        yMin = 0;
-        yMax = 100;
-      } else {
-        // For other metrics, add padding
-        const yPadding = (yMax - yMin) * 0.1;
-        yMin = Math.max(0, yMin - yPadding); // Don't go below 0 for most metrics
-        yMax = yMax + yPadding;
-      }
-      
-      const y = d3.scaleLinear()
-        .domain([yMin, yMax])
-        .range([innerHeight, 0]);
-      
-      // Add axes
-      svg.append('g')
-        .attr('transform', `translate(0,${innerHeight})`)
-        .call(d3.axisBottom(x).ticks(5));
-      
-      // Create y-axis with custom formatting for bytes
-      let yAxis;
-      if (unit === 'bytes') {
-        yAxis = d3.axisLeft(y).tickFormat(d => formatBytes(d));
-      } else if (unit === 'percent') {
-        yAxis = d3.axisLeft(y).tickFormat(d => d + '%');
-      } else {
-        yAxis = d3.axisLeft(y);
-      }
-      
-      // Add grid lines
-      svg.append('g')
-        .attr('class', 'grid')
-        .attr('opacity', 0.3)
-        .call(d3.axisLeft(y)
-          .tickSize(-innerWidth)
-          .tickFormat('')
-        );
-      
-      svg.append('g')
-        .call(yAxis);
-      
-      // Define line generator
-      const line = d3.line()
-        .x(d => x(d.time))
-        .y(d => y(d.value))
-        .curve(d3.curveMonotoneX);
-      
-      // Color scale
-      const color = d3.scaleOrdinal(d3.schemeCategory10);
-      
-      // Draw lines
-      series.forEach((s, i) => {
-        svg.append('path')
-          .datum(s.values)
-          .attr('fill', 'none')
-          .attr('stroke', color(i))
-          .attr('stroke-width', 2)
-          .attr('d', line);
-      });
-      
-      // Add tooltip
-      const tooltip = d3.select('body').append('div')
-        .attr('class', 'd3-chart tooltip')
-        .style('opacity', 0)
-        .style('position', 'absolute')
-        .style('pointer-events', 'none');
-      
-      // Add transparent overlay for mouse events
-      const overlay = svg.append('rect')
-        .attr('class', 'overlay')
-        .attr('width', innerWidth)
-        .attr('height', innerHeight)
-        .on('mousemove', function(event) {
-          const [mouseX] = d3.pointer(event, this);
-          const date = x.invert(mouseX);
-          const timestamp = date.getTime();
-          
-          // Find the closest data point for each series
-          const points = [];
-          series.forEach((s, i) => {
-            const closest = s.values.reduce((prev, curr) => {
-              const prevDiff = Math.abs(prev.time.getTime() - timestamp);
-              const currDiff = Math.abs(curr.time.getTime() - timestamp);
-              return prevDiff < currDiff ? prev : curr;
-            });
-            
-            points.push({
-              name: s.name,
-              value: closest.value,
-              time: closest.time,
-              color: color(i)
-            });
-          });
-          
-          // Update tooltip
-          tooltip.style('opacity', 1)
-            .style('left', (event.pageX + 10) + 'px')
-            .style('top', (event.pageY - 28) + 'px')
-            .html(() => {
-              const formattedTime = points[0].time.toLocaleTimeString();
-              const rows = points.map(p => {
-                // Format value appropriately based on unit
-                let formattedValue;
-                if (unit === 'bytes') {
-                  formattedValue = formatBytes(p.value);
-                } else if (unit === 'percent') {
-                  formattedValue = p.value.toFixed(2) + '%';
-                } else {
-                  formattedValue = p.value.toFixed(2);
-                }
-                
-                return `<div style="display:flex; align-items:center; margin:3px 0;">
-                  <div style="width:10px; height:10px; background:${p.color}; margin-right:5px;"></div>
-                  <span>${p.name ? p.name + ': ' : ''}${formattedValue}</span>
-                </div>`;
-              }).join('');
-              
-              return `
-                <strong>${formattedTime}</strong>
-                ${rows}
-              `;
-            });
+      // Create a promise for this series
+      const seriesPromise = fetch(url)
+        .then(response => {
+          if (!response.ok) {
+            throw new Error(`Network response was not ok for ${label}`);
+          }
+          return response.json();
         })
-        .on('mouseout', function() {
-          tooltip.style('opacity', 0);
+        .then(data => {
+          return {
+            label: label,
+            data: data
+          };
+        })
+        .catch(error => {
+          console.error(`Error fetching metric data for ${metricName} - ${label}:`, error);
+          // Return empty series on error
+          return {
+            label: label,
+            data: { data: { result: [] } }
+          };
         });
       
-      // Add legend if there are multiple series
-      if (series.length > 1) {
-        const legend = svg.append('g')
-          .attr('font-family', 'sans-serif')
-          .attr('font-size', 10)
-          .attr('text-anchor', 'end')
-          .selectAll('g')
-          .data(series)
-          .enter().append('g')
-          .attr('transform', (d, i) => `translate(0,${i * 20})`);
-        
-        legend.append('rect')
-          .attr('x', innerWidth - 19)
-          .attr('width', 19)
-          .attr('height', 19)
-          .attr('fill', (d, i) => color(i));
-        
-        legend.append('text')
-          .attr('x', innerWidth - 24)
-          .attr('y', 9.5)
-          .attr('dy', '0.32em')
-          .text(d => d.name);
-      }
-      
-      // Add unit label if provided
-      if (unit) {
-        svg.append('text')
-          .attr('transform', 'rotate(-90)')
-          .attr('y', -margin.left + 15)
-          .attr('x', -innerHeight / 2)
-          .attr('text-anchor', 'middle')
-          .text(unit);
-      }
-    })
-    .catch(error => {
-      console.error('Error fetching metric data:', error);
-      loading.remove();
-      
-      svg.append('text')
-        .attr('x', innerWidth / 2)
-        .attr('y', innerHeight / 2)
-        .attr('text-anchor', 'middle')
-        .text('Error loading data');
+      seriesPromises.push(seriesPromise);
     });
+    
+    // Wait for all series to be fetched
+    return Promise.all(seriesPromises)
+      .then(seriesResults => {
+        // Process all series data
+        createOrUpdateChart(chartElement, seriesResults, unit);
+        return seriesResults;
+      })
+      .catch(error => {
+        console.error(`Error fetching metric data for ${metricName}:`, error);
+        // Show error message in chart
+        chartElement.html(`<div class="h-full w-full flex items-center justify-center">
+          <p class="text-sm text-red-500">Error loading metric data</p>
+        </div>`);
+      });
+  }
+  
+  // Function to refresh all charts
+  function refreshAllCharts() {
+    if (!config) return;
+    
+    const startTime = new Date();
+    lastRefresh = startTime;
+    
+    // Update refresh button state
+    const $btn = $('#refresh-metrics-btn');
+    const originalText = $btn.html();
+    $btn.html('<svg class="animate-spin -ml-0.5 mr-1.5 h-5 w-5 text-gray-400" viewBox="0 0 24 24" fill="none"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> Refreshing');
+    $btn.prop('disabled', true);
+    
+    // Create promises for all chart updates
+    const promises = $('.apex-chart').map(function() {
+      return fetchChartData($(this), config);
+    }).get();
+    
+    // Wait for all charts to update
+    Promise.all(promises)
+      .then(() => {
+        const endTime = new Date();
+        const elapsedTime = (endTime - startTime) / 1000;
+        console.log(`Charts refreshed in ${elapsedTime.toFixed(2)}s`);
+        
+        // Update refresh button state
+        $btn.html(originalText);
+        $btn.prop('disabled', false);
+      })
+      .catch(error => {
+        console.error('Error refreshing charts:', error);
+        // Update refresh button state
+        $btn.html(originalText);
+        $btn.prop('disabled', false);
+      });
+  }
+  
+  // Initialize auto-refresh
+  function setupAutoRefresh() {
+    // Toggle auto-refresh on checkbox change
+    $('#auto-refresh-toggle').on('change', function() {
+      autoRefreshActive = $(this).prop('checked');
+      
+      if (autoRefreshActive) {
+        $('#refresh-interval').text('30s');
+        
+        // Clear existing interval if any
+        if (refreshInterval) {
+          clearInterval(refreshInterval);
+        }
+        
+        // Set up new interval
+        refreshInterval = setInterval(() => {
+          refreshAllCharts();
+          
+          // Update timer text
+          const nextRefresh = new Date(lastRefresh.getTime() + 30000);
+          const now = new Date();
+          const remainingSecs = Math.max(0, Math.floor((nextRefresh - now) / 1000));
+          $('#refresh-interval').text(`${remainingSecs}s`);
+        }, 1000); // Update countdown every second
+        
+        // Trigger an immediate refresh
+        refreshAllCharts();
+      } else {
+        // Clear interval
+        if (refreshInterval) {
+          clearInterval(refreshInterval);
+          refreshInterval = null;
+        }
+        
+        $('#refresh-interval').text('30s');
+      }
+    });
+  }
+  
+  // Handle time range selection
+  function setupTimeRangeSelector() {
+    $('#metrics-time-range').on('change', function() {
+      timeRange = $(this).val();
+      refreshAllCharts();
+    });
+  }
+  
+  // Initialize charts and controls
+  function initialize() {
+    // Fetch metrics configuration
+    $.ajax({
+      url: `${window.location.pathname.split('/postgres/')[0]}/postgres/metrics-config`,
+      type: 'GET',
+      dataType: 'json',
+      success: function(data) {
+        config = data;
+        
+        // Init charts
+        $('.apex-chart').each(function() {
+          fetchChartData($(this), config);
+        });
+        
+        // Setup controls
+        setupAutoRefresh();
+        setupTimeRangeSelector();
+        
+        // Setup query toggle buttons
+        $('.query-toggle').on('click', function() {
+          const targetId = $(this).data('target');
+          const $target = $(`#${targetId}`);
+          
+          // Toggle the target visibility
+          $target.toggleClass('hidden');
+          
+          // Update button text
+          if ($target.hasClass('hidden')) {
+            $(this).text('Show Queries');
+          } else {
+            $(this).text('Hide Queries');
+          }
+        });
+        
+        // Manual refresh button
+        $('#refresh-metrics-btn').on('click', refreshAllCharts);
+      },
+      error: function(xhr, status, error) {
+        console.error('Failed to load metrics configuration:', error);
+        $('.apex-chart').each(function() {
+          $(this).html(`<div class="h-full w-full flex items-center justify-center">
+            <p class="text-sm text-red-500">Error loading metrics configuration</p>
+          </div>`);
+        });
+      }
+    });
+  }
+  
+  // Start initialization
+  initialize();
 }
+
